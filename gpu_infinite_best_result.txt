@@ -1,0 +1,7 @@
+=== INFINITE GPU OPTIMIZATION BEST RESULT ===
+Best h_seed: 1677330004 (0x63fa0654)
+Best k_seed: 897531711 (0x357f3f3f)
+Average Standard Deviation: 5.827034
+Total tests completed: 68000000
+Runtime: 488 seconds
+Tests per second: 139344

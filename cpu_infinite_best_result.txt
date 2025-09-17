@@ -1,0 +1,8 @@
+=== INFINITE CPU OPTIMIZATION BEST RESULT ===
+Best h_seed: 1914452685 (0x721c3acd)
+Best k_seed: 1821846488 (0x6c972bd8)
+Average Standard Deviation: 1.142350
+Total tests completed: 1821191
+Runtime: 2 seconds
+Threads used: 12
+Tests per second: 910595
