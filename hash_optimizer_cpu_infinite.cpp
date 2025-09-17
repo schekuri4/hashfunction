@@ -2,6 +2,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <sstream>
 #include <cmath>
 #include <chrono>
 #include <algorithm>
@@ -21,6 +22,8 @@ atomic<unsigned int> global_best_h(0);
 atomic<unsigned int> global_best_k(0);
 atomic<long long> total_tests_completed(0);
 mutex output_mutex;
+string output_filename;
+chrono::system_clock::time_point start_timestamp;
 
 // Signal handler for Ctrl+C
 void signal_handler(int signal) {
@@ -62,34 +65,34 @@ int hash_function(const string& text, unsigned int h_seed, unsigned int k_seed) 
     return h;
 }
 
-// Calculate standard deviation for a dataset with given seeds
-double calculate_std_dev(const vector<string>& dataset, unsigned int h_seed, unsigned int k_seed) {
-    vector<int> buckets(100, 0);
+// Calculate standard deviation for a dataset with given seeds and bucket count
+double calculate_std_dev(const vector<string>& dataset, unsigned int h_seed, unsigned int k_seed, int k = 100) {
+    vector<int> buckets(k, 0);
     
     for (const string& str : dataset) {
-        int bucket = hash_function(str, h_seed, k_seed);
+        int hash_val = hash_function(str, h_seed, k_seed);
+        int bucket = abs(hash_val) % k;
         buckets[bucket]++;
     }
     
-    double mean = static_cast<double>(dataset.size()) / 100.0;
-    double variance = 0.0;
+    double mean = (double)dataset.size() / k;
+    double sum = 0.0;
     
-    for (int count : buckets) {
-        double diff = count - mean;
-        variance += diff * diff;
+    for (int i = 0; i < k; i++) {
+        double diff = buckets[i] - mean;
+        sum += diff * diff;
     }
-    variance /= 100.0;
     
-    return sqrt(variance);
+    return sqrt(sum / k);
 }
 
 // Calculate average standard deviation across all datasets
 double calculate_average_std_dev(const vector<vector<string>>& datasets, 
-                                unsigned int h_seed, unsigned int k_seed) {
+                                unsigned int h_seed, unsigned int k_seed, int k = 100) {
     double total_std_dev = 0.0;
     
     for (const auto& dataset : datasets) {
-        total_std_dev += calculate_std_dev(dataset, h_seed, k_seed);
+        total_std_dev += calculate_std_dev(dataset, h_seed, k_seed, k);
     }
     
     return total_std_dev / datasets.size();
@@ -111,23 +114,64 @@ vector<string> load_dataset(const string& filename) {
 }
 
 // Save best result to file
+string extract_hash_function() {
+    ifstream source_file(__FILE__);
+    string line;
+    string hash_function = "";
+    bool in_function = false;
+    int brace_count = 0;
+    
+    while (getline(source_file, line)) {
+        // Look for the start of the hash function
+        if (line.find("int hash_function(const string& text") != string::npos) {
+            in_function = true;
+            hash_function += line + "\n";
+            if (line.find("{") != string::npos) {
+                brace_count = 1;
+            }
+            continue;
+        }
+        
+        if (in_function) {
+            hash_function += line + "\n";
+            
+            // Count braces to find the end of the function
+            for (char c : line) {
+                if (c == '{') brace_count++;
+                else if (c == '}') brace_count--;
+            }
+            
+            // If we've closed all braces, we're done
+            if (brace_count == 0) {
+                break;
+            }
+        }
+    }
+    
+    source_file.close();
+    return hash_function;
+}
+
 void save_best_result(double best_score, unsigned int best_h, unsigned int best_k, 
                      long long total_tests, int runtime_seconds, int thread_count) {
-    ofstream file("cpu_infinite_best_result.txt");
-    file << "=== INFINITE CPU OPTIMIZATION BEST RESULT ===" << endl;
-    file << "Best h_seed: " << best_h << " (0x" << hex << best_h << dec << ")" << endl;
-    file << "Best k_seed: " << best_k << " (0x" << hex << best_k << dec << ")" << endl;
-    file << "Average Standard Deviation: " << fixed << setprecision(6) << best_score << endl;
-    file << "Total tests completed: " << total_tests << endl;
-    file << "Runtime: " << runtime_seconds << " seconds" << endl;
-    file << "Threads used: " << thread_count << endl;
-    file << "Tests per second: " << (total_tests / max(1, runtime_seconds)) << endl;
+    // Get current time for this result
+    auto now = chrono::system_clock::now();
+    auto time_t = chrono::system_clock::to_time_t(now);
+    
+    // Append to the single output file
+    ofstream file(output_filename, ios::app);
+    file << "[" << put_time(localtime(&time_t), "%Y-%m-%d %H:%M:%S") << "] "
+         << "CPU NEW BEST (T" << thread_count << "): Score=" << fixed << setprecision(6) << best_score 
+         << " | Hash: h=" << best_h << "(0x" << hex << best_h << dec 
+         << "), k=" << best_k << "(0x" << hex << best_k << dec 
+         << ") | Tests=" << total_tests << " | Runtime=" << runtime_seconds 
+         << "s | Rate=" << (total_tests / max(1, runtime_seconds)) << "/s" << endl;
     file.close();
 }
 
 // Worker thread function
 void worker_thread(int thread_id, const vector<vector<string>>& datasets, 
-                  int tests_per_batch, chrono::high_resolution_clock::time_point start_time) {
+                  int tests_per_batch, chrono::high_resolution_clock::time_point start_time, int k) {
     random_device rd;
     mt19937 gen(rd() + thread_id);  // Different seed per thread
     uniform_int_distribution<unsigned int> dis;
@@ -142,7 +186,7 @@ void worker_thread(int thread_id, const vector<vector<string>>& datasets,
             unsigned int h_seed = dis(gen);
             unsigned int k_seed = dis(gen);
             
-            double score = calculate_average_std_dev(datasets, h_seed, k_seed);
+            double score = calculate_average_std_dev(datasets, h_seed, k_seed, k);
             total_tests_completed++;
             
             // Check if this is a new best
@@ -156,14 +200,18 @@ void worker_thread(int thread_id, const vector<vector<string>>& datasets,
                     auto current_time = chrono::high_resolution_clock::now();
                     auto duration = chrono::duration_cast<chrono::seconds>(current_time - start_time);
                     
+                    // Get current timestamp
+                    auto now = chrono::system_clock::now();
+                    auto time_t = chrono::system_clock::to_time_t(now);
+                    
                     lock_guard<mutex> lock(output_mutex);
-                    cout << "\n🎉 NEW BEST FOUND by Thread " << thread_id << "!" << endl;
-                    cout << "Tests: " << total_tests_completed.load() << endl;
-                    cout << "Score: " << fixed << setprecision(6) << score << endl;
-                    cout << "h_seed: " << h_seed << " (0x" << hex << h_seed << dec << ")" << endl;
-                    cout << "k_seed: " << k_seed << " (0x" << hex << k_seed << dec << ")" << endl;
-                    cout << "Runtime: " << duration.count() << "s | Rate: " 
-                         << (total_tests_completed.load() / max(1, (int)duration.count())) << " tests/sec" << endl;
+                    cout << "\n🎉 [" << put_time(localtime(&time_t), "%Y-%m-%d %H:%M:%S") 
+                         << "] NEW BEST (T" << thread_id << "): Score=" << fixed << setprecision(6) << score 
+                         << " | Hash: h=" << h_seed << "(0x" << hex << h_seed << dec 
+                         << "), k=" << k_seed << "(0x" << hex << k_seed << dec 
+                         << ") | Function: h=h_seed^0x9e3779b9, k=k_seed^0x85ebca6b | Tests=" << total_tests_completed.load() 
+                         << " | Runtime=" << duration.count() << "s | Rate=" 
+                         << (total_tests_completed.load() / max(1, (int)duration.count())) << "/s" << endl;
                     
                     // Save immediately when we find a better result
                     save_best_result(score, h_seed, k_seed, total_tests_completed.load(), 
@@ -228,6 +276,37 @@ int main() {
         return 1;
     }
     
+    // Initialize output file with start timestamp
+    start_timestamp = chrono::system_clock::now();
+    auto start_time_t = chrono::system_clock::to_time_t(start_timestamp);
+    
+    stringstream filename;
+    filename << "hash_optimization_results_" 
+             << put_time(localtime(&start_time_t), "%Y%m%d_%H%M%S") << ".txt";
+    output_filename = filename.str();
+    
+    ofstream file(output_filename);
+    file << "=== HASH FUNCTION OPTIMIZATION RESULTS ===" << endl;
+    file << "Started: " << put_time(localtime(&start_time_t), "%Y-%m-%d %H:%M:%S") << endl;
+    file << "Hash Function Implementation:" << endl;
+    file << extract_hash_function();
+    file << "Datasets: " << datasets.size() << " loaded" << endl;
+    file << "=== OPTIMIZATION PROGRESS ===" << endl;
+    file.close();
+    
+    cout << "\nResults will be saved to: " << output_filename << endl;
+    
+    // Calculate bucket count based on total number of strings
+    int total_strings = 0;
+    for (const auto& dataset : datasets) {
+        total_strings += dataset.size();
+    }
+    int k = total_strings;  // Use total number of strings as bucket count
+    
+    cout << "\nAutomatic bucket calculation:" << endl;
+    cout << "- Total strings across all datasets: " << total_strings << endl;
+    cout << "- Using " << k << " buckets for optimization" << endl;
+    
     // Configuration
     int num_threads = thread::hardware_concurrency();
     if (num_threads == 0) num_threads = 4;  // Fallback
@@ -247,7 +326,7 @@ int main() {
     // Start worker threads
     vector<thread> threads;
     for (int i = 0; i < num_threads; i++) {
-        threads.emplace_back(worker_thread, i, ref(datasets), tests_per_batch, start_time);
+        threads.emplace_back(worker_thread, i, ref(datasets), tests_per_batch, start_time, k);
     }
     
     // Main monitoring loop
@@ -289,8 +368,6 @@ int main() {
     
     save_best_result(global_best_score.load(), global_best_h.load(), global_best_k.load(), 
                     total_tests_completed.load(), total_duration.count(), num_threads);
-    
-    cout << "\nResults saved to cpu_infinite_best_result.txt" << endl;
     
     return 0;
 }

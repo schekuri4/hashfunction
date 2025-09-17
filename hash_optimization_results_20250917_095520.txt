@@ -1,0 +1,54 @@
+=== HASH FUNCTION OPTIMIZATION RESULTS ===
+Started: 2025-09-17 09:55:20
+Hash Function Implementation:
+int hash_function(const string& text, unsigned int h_seed, unsigned int k_seed) {
+    unsigned int h = h_seed ^ 0x9e3779b9;
+    unsigned int k = k_seed ^ 0x85ebca6b;
+    unsigned int len = text.length();
+    
+    for (size_t i = 0; i < len; i++) {
+        unsigned int c = (unsigned int)text[i];
+        
+        h ^= c * 0x9e3779b1;
+        k += c * 0xc2b2ae35;
+        
+        h = (h << 13) | (h >> 19);
+        k = (k << 17) | (k >> 15);
+        
+        h += k * 0x165667b1;
+        k ^= h * 0x27d4eb2f;
+        
+        h ^= k;
+        k += h;
+    }
+    
+    h ^= len;
+    k ^= h;
+    
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    
+    return h;
+}
+Datasets: 3 loaded
+=== OPTIMIZATION PROGRESS ===
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.565325 | Hash: h=1184450340(0x46994724), k=3563521378(0xd4670562) | Tests=132 | Runtime=0s | Rate=132/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.554271 | Hash: h=1993483971(0x76d226c3), k=806116671(0x300c5d3f) | Tests=615 | Runtime=0s | Rate=615/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.541353 | Hash: h=777173993(0x2e52bbe9), k=520644770(0x1f0868a2) | Tests=978 | Runtime=0s | Rate=978/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.541210 | Hash: h=4247320614(0xfd28f826), k=3293079745(0xc44868c1) | Tests=1453 | Runtime=0s | Rate=1453/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.533810 | Hash: h=3302534090(0xc4d8abca), k=1237672717(0x49c5630d) | Tests=1676 | Runtime=0s | Rate=1676/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.531866 | Hash: h=2722989927(0xa24d8767), k=3998671302(0xee56e1c6) | Tests=1956 | Runtime=0s | Rate=1956/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.530343 | Hash: h=2991198300(0xb24a105c), k=3165009880(0xbca637d8) | Tests=2270 | Runtime=0s | Rate=2270/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.528006 | Hash: h=2736372348(0xa319ba7c), k=3442046163(0xcd2974d3) | Tests=2535 | Runtime=0s | Rate=2535/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.527047 | Hash: h=3135444152(0xbae314b8), k=190990868(0xb624a14) | Tests=2862 | Runtime=0s | Rate=2862/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.523979 | Hash: h=3202828520(0xbee748e8), k=3175040839(0xbd3f4747) | Tests=5535 | Runtime=0s | Rate=5535/s
+[2025-09-17 09:55:20] CPU NEW BEST (T12): Score=0.521313 | Hash: h=3966327026(0xec6958f2), k=196080810(0xbaff4aa) | Tests=8516 | Runtime=0s | Rate=8516/s
+[2025-09-17 09:55:21] CPU NEW BEST (T12): Score=0.520302 | Hash: h=1512579086(0x5a28200e), k=531875862(0x1fb3c816) | Tests=168272 | Runtime=0s | Rate=168272/s
+[2025-09-17 09:55:21] CPU NEW BEST (T12): Score=0.517567 | Hash: h=3786654310(0xe1b3c266), k=895114119(0x355a5b87) | Tests=412356 | Runtime=1s | Rate=412356/s
+[2025-09-17 09:55:23] CPU NEW BEST (T12): Score=0.517077 | Hash: h=1659406267(0x62e887bb), k=4054209603(0xf1a65443) | Tests=1173005 | Runtime=2s | Rate=586502/s
+[2025-09-17 09:55:24] CPU NEW BEST (T12): Score=0.513641 | Hash: h=4198433077(0xfa3f0135), k=3479152590(0xcf5fa7ce) | Tests=1278797 | Runtime=3s | Rate=426265/s
+[2025-09-17 09:57:05] CPU NEW BEST (T12): Score=0.513131 | Hash: h=593411371(0x235ebd2b), k=1912342947(0x71fc09a3) | Tests=38646152 | Runtime=104s | Rate=371597/s
+[2025-09-17 09:58:37] CPU NEW BEST (T12): Score=0.510856 | Hash: h=1312712578(0x4e3e6782), k=2875837452(0xab69cc0c) | Tests=69653815 | Runtime=196s | Rate=355376/s

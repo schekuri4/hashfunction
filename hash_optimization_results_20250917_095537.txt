@@ -1,0 +1,40 @@
+=== HASH FUNCTION OPTIMIZATION RESULTS ===
+Started: 2025-09-17 09:55:37
+Hash Function Implementation:
+__device__ unsigned int hash_function_gpu(const char* text, int len, unsigned int h_seed, unsigned int k_seed) {
+    unsigned int h = h_seed ^ 0x9e3779b9;
+    unsigned int k = k_seed ^ 0x85ebca6b;
+    
+    for (int i = 0; i < len; i++) {
+        unsigned int c = (unsigned int)text[i];
+        
+        h ^= c * 0x9e3779b1;
+        k += c * 0xc2b2ae35;
+        
+        h = (h << 13) | (h >> 19);
+        k = (k << 17) | (k >> 15);
+        
+        h += k * 0x165667b1;
+        k ^= h * 0x27d4eb2f;
+        
+        h ^= k;
+        k += h;
+    }
+    
+    h ^= len;
+    k ^= h;
+    
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    
+    return h;
+}
+Datasets: 3 loaded
+=== OPTIMIZATION PROGRESS ===
+[2025-09-17 09:55:39] GPU NEW BEST: Score=0.539285 | Hash: h=3630836164(0xd86a29c4), k=1807215440(0x6bb7eb50) | Tests=1000000 | Runtime=0s | Rate=1000000/s
+[2025-09-17 09:55:40] GPU NEW BEST: Score=0.537188 | Hash: h=2992776573(0xb262257d), k=1145907865(0x444d2a99) | Tests=3000000 | Runtime=1s | Rate=3000000/s
+[2025-09-17 09:55:43] GPU NEW BEST: Score=0.535738 | Hash: h=4241191437(0xfccb720d), k=882917101(0x34a03eed) | Tests=8000000 | Runtime=4s | Rate=2000000/s
+[2025-09-17 09:55:58] GPU NEW BEST: Score=0.532076 | Hash: h=1711491867(0x66034b1b), k=1774835571(0x69c9d773) | Tests=37000000 | Runtime=19s | Rate=1947368/s

@@ -2,6 +2,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <sstream>
 #include <cmath>
 #include <chrono>
 #include <algorithm>
@@ -28,6 +29,8 @@ atomic<bool> keep_running(true);
 double global_best_score = 1000.0;
 unsigned int global_best_h = 0;
 unsigned int global_best_k = 0;
+string output_filename;
+chrono::system_clock::time_point start_timestamp;
 
 // Signal handler for Ctrl+C
 void signal_handler(int signal) {
@@ -36,7 +39,7 @@ void signal_handler(int signal) {
 }
 
 // New optimized GPU hash function
-__device__ int hash_function_gpu(const char* text, int len, unsigned int h_seed, unsigned int k_seed) {
+__device__ unsigned int hash_function_gpu(const char* text, int len, unsigned int h_seed, unsigned int k_seed) {
     unsigned int h = h_seed ^ 0x9e3779b9;
     unsigned int k = k_seed ^ 0x85ebca6b;
     
@@ -65,14 +68,14 @@ __device__ int hash_function_gpu(const char* text, int len, unsigned int h_seed,
     h *= 0xc2b2ae35;
     h ^= h >> 16;
     
-    return h % 100;
+    return h;
 }
 
 // GPU kernel for calculating standard deviation for multiple datasets
 __global__ void calculate_multi_dataset_std_dev_kernel(
     char** datasets, int** string_lengths, int** string_offsets, int* num_strings_per_dataset,
     int num_datasets, unsigned int* h_seeds, unsigned int* k_seeds, 
-    double* results, int num_tests) {
+    double* results, int num_tests, int k) {
     
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_tests) return;
@@ -84,26 +87,35 @@ __global__ void calculate_multi_dataset_std_dev_kernel(
     
     // Test on all datasets
     for (int dataset_idx = 0; dataset_idx < num_datasets; dataset_idx++) {
-        int buckets[100] = {0};
+        // Use fixed-size array with safe maximum for GPU stack memory
+        const int MAX_BUCKETS = 5000;  // Reduced to prevent stack overflow
+        int buckets[MAX_BUCKETS];
+        
+        // Only use up to k buckets (bounded by MAX_BUCKETS)
+        int actual_k = min(k, MAX_BUCKETS);
+        for (int i = 0; i < actual_k; i++) buckets[i] = 0;
+        
         int num_strings = num_strings_per_dataset[dataset_idx];
         
         // Hash all strings in this dataset
         for (int i = 0; i < num_strings; i++) {
             char* str_start = datasets[dataset_idx] + string_offsets[dataset_idx][i];
             int str_len = string_lengths[dataset_idx][i];
-            int bucket = hash_function_gpu(str_start, str_len, h_seed, k_seed);
+            unsigned int hash_val = hash_function_gpu(str_start, str_len, h_seed, k_seed);
+            // Use unsigned arithmetic to avoid negative modulo issues
+            unsigned int bucket = hash_val % actual_k;
             buckets[bucket]++;
         }
         
         // Calculate standard deviation for this dataset
-        double mean = static_cast<double>(num_strings) / 100.0;
+        double mean = static_cast<double>(num_strings) / actual_k;
         double variance = 0.0;
         
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < actual_k; i++) {
             double diff = buckets[i] - mean;
             variance += diff * diff;
         }
-        variance /= 100.0;
+        variance /= actual_k;
         total_std_dev += sqrt(variance);
     }
     
@@ -195,16 +207,58 @@ vector<string> load_dataset(const string& filename) {
     return dataset;
 }
 
+string extract_hash_function() {
+    ifstream source_file(__FILE__);
+    string line;
+    string hash_function = "";
+    bool in_function = false;
+    int brace_count = 0;
+    
+    while (getline(source_file, line)) {
+        // Look for the start of the hash function
+        if (line.find("__device__ unsigned int hash_function_gpu") != string::npos) {
+            in_function = true;
+            hash_function += line + "\n";
+            if (line.find("{") != string::npos) {
+                brace_count = 1;
+            }
+            continue;
+        }
+        
+        if (in_function) {
+            hash_function += line + "\n";
+            
+            // Count braces to find the end of the function
+            for (char c : line) {
+                if (c == '{') brace_count++;
+                else if (c == '}') brace_count--;
+            }
+            
+            // If we've closed all braces, we're done
+            if (brace_count == 0) {
+                break;
+            }
+        }
+    }
+    
+    source_file.close();
+    return hash_function;
+}
+
 void save_best_result(double best_score, unsigned int best_h, unsigned int best_k, 
                      long long total_tests, int runtime_seconds) {
-    ofstream file("gpu_infinite_best_result.txt");
-    file << "=== INFINITE GPU OPTIMIZATION BEST RESULT ===" << endl;
-    file << "Best h_seed: " << best_h << " (0x" << hex << best_h << dec << ")" << endl;
-    file << "Best k_seed: " << best_k << " (0x" << hex << best_k << dec << ")" << endl;
-    file << "Average Standard Deviation: " << fixed << setprecision(6) << best_score << endl;
-    file << "Total tests completed: " << total_tests << endl;
-    file << "Runtime: " << runtime_seconds << " seconds" << endl;
-    file << "Tests per second: " << (total_tests / max(1, runtime_seconds)) << endl;
+    // Get current time for this result
+    auto now = chrono::system_clock::now();
+    auto time_t = chrono::system_clock::to_time_t(now);
+    
+    // Append to the single output file
+    ofstream file(output_filename, ios::app);
+    file << "[" << put_time(localtime(&time_t), "%Y-%m-%d %H:%M:%S") << "] "
+         << "GPU NEW BEST: Score=" << fixed << setprecision(6) << best_score 
+         << " | Hash: h=" << best_h << "(0x" << hex << best_h << dec 
+         << "), k=" << best_k << "(0x" << hex << best_k << dec 
+         << ") | Tests=" << total_tests << " | Runtime=" << runtime_seconds 
+         << "s | Rate=" << (total_tests / max(1, runtime_seconds)) << "/s" << endl;
     file.close();
 }
 
@@ -262,10 +316,47 @@ int main() {
         cout << "Loaded " << dataset.size() << " entries from " << name << endl;
     }
     
+    // Initialize output file with start timestamp
+    start_timestamp = chrono::system_clock::now();
+    auto start_time_t = chrono::system_clock::to_time_t(start_timestamp);
+    
+    stringstream filename;
+    filename << "hash_optimization_results_" 
+             << put_time(localtime(&start_time_t), "%Y%m%d_%H%M%S") << ".txt";
+    output_filename = filename.str();
+    
+    ofstream file(output_filename);
+    file << "=== HASH FUNCTION OPTIMIZATION RESULTS ===" << endl;
+    file << "Started: " << put_time(localtime(&start_time_t), "%Y-%m-%d %H:%M:%S") << endl;
+    file << "Hash Function Implementation:" << endl;
+    file << extract_hash_function();
+    file << "Datasets: " << datasets.size() << " loaded" << endl;
+    file << "=== OPTIMIZATION PROGRESS ===" << endl;
+    file.close();
+    
+    cout << "\nResults will be saved to: " << output_filename << endl;
+    
     if (datasets.empty()) {
         cout << "Error: No datasets loaded!" << endl;
         return 1;
     }
+    
+    // Calculate bucket count based on total number of strings
+    int total_strings = 0;
+    for (const auto& dataset : datasets) {
+        total_strings += dataset.size();
+    }
+    int k = total_strings;  // Use total number of strings as bucket count
+    
+    // Ensure bucket count is within GPU memory limits
+    if (k > 1000) {
+        k = 1000;  // Cap at 1000 for GPU memory safety
+        cout << "\nNote: Bucket count capped at 1000 for GPU memory safety" << endl;
+    }
+    
+    cout << "\nAutomatic bucket calculation:" << endl;
+    cout << "- Total strings across all datasets: " << total_strings << endl;
+    cout << "- Using " << k << " buckets for optimization" << endl;
     
     // Configuration for maximum GPU utilization
     int tests_per_batch = 1000000;  // 1M tests per batch
@@ -343,7 +434,7 @@ int main() {
         // Run optimization kernel
         calculate_multi_dataset_std_dev_kernel<<<blocks, threads_per_block>>>(
             d_dataset_ptrs, d_lengths_ptrs, d_offsets_ptrs, d_num_strings,
-            gpu_datasets.size(), d_h_seeds, d_k_seeds, d_results, tests_per_batch);
+            gpu_datasets.size(), d_h_seeds, d_k_seeds, d_results, tests_per_batch, k);
         CUDA_CHECK(cudaDeviceSynchronize());
         
         // Copy results back to host
@@ -370,13 +461,17 @@ int main() {
             auto current_time = chrono::high_resolution_clock::now();
             auto duration = chrono::duration_cast<chrono::seconds>(current_time - start_time);
             
-            cout << "\n🎉 NEW BEST FOUND!" << endl;
-            cout << "Batch: " << batch_count << " | Tests: " << total_tests << endl;
-            cout << "Score: " << fixed << setprecision(6) << global_best_score << endl;
-            cout << "h_seed: " << global_best_h << " (0x" << hex << global_best_h << dec << ")" << endl;
-            cout << "k_seed: " << global_best_k << " (0x" << hex << global_best_k << dec << ")" << endl;
-            cout << "Runtime: " << duration.count() << "s | Rate: " 
-                 << (total_tests / max(1, (int)duration.count())) << " tests/sec" << endl;
+            // Get current timestamp
+            auto now = chrono::system_clock::now();
+            auto time_t = chrono::system_clock::to_time_t(now);
+            
+            cout << "\n🎉 [" << put_time(localtime(&time_t), "%Y-%m-%d %H:%M:%S") 
+                 << "] NEW BEST: Score=" << fixed << setprecision(6) << global_best_score 
+                 << " | Hash: h=" << global_best_h << "(0x" << hex << global_best_h << dec 
+                 << "), k=" << global_best_k << "(0x" << hex << global_best_k << dec 
+                 << ") | Function: h=h_seed^0x9e3779b9, k=k_seed^0x85ebca6b | Tests=" << total_tests 
+                 << " | Runtime=" << duration.count() << "s | Rate=" 
+                 << (total_tests / max(1, (int)duration.count())) << "/s" << endl;
             
             // Save immediately when we find a better result
             save_best_result(global_best_score, global_best_h, global_best_k, 
@@ -413,8 +508,6 @@ int main() {
     
     save_best_result(global_best_score, global_best_h, global_best_k, 
                     total_tests, total_duration.count());
-    
-    cout << "\nResults saved to gpu_infinite_best_result.txt" << endl;
     
     // Cleanup
     for (auto& gpu_dataset : gpu_datasets) {
