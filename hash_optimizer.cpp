@@ -12,71 +12,38 @@
 
 using namespace std;
 
-// Ultra-advanced hash function implementation (same as in hash.cpp)
+// Hash function matching hash.cpp exactly
 int hash_function_test(const string &text, unsigned int h_seed, unsigned int k_seed) {
-    unsigned int h = h_seed;
-    unsigned int k = k_seed;
+    unsigned int h = h_seed ^ 0x9e3779b9;
+    unsigned int k = k_seed ^ 0x85ebca6b;
     unsigned int len = text.length();
     
-    // Length-dependent seed adjustment for better distribution
-    h ^= len * 0x9e3779b9;  // Golden ratio
-    k ^= len * 0x6a09e667;  // Square root of 2
-
-    // Prime constants for superior mixing
-    const unsigned int prime1 = 0x9e3779b1;  // Large prime near golden ratio
-    const unsigned int prime2 = 0x85ebca77;  // Large prime
-    const unsigned int prime3 = 0xc2b2ae3d;  // Large prime
-    const unsigned int prime4 = 0x27d4eb2f;  // Large prime
-    
-    // Multi-round processing with different strategies per round
     for (size_t i = 0; i < len; i++) {
         unsigned int c = (unsigned int)text[i];
         
-        // Round 1: Prime-based character mixing
-        h ^= c * prime1;
-        k ^= c * prime2;
+        h ^= c * 0x9e3779b1;
+        k += c * 0xc2b2ae35;
         
-        // Advanced bit rotations (using Fibonacci numbers for optimal distribution)
-        h = (h << 13) | (h >> 19);  // 13-bit rotation (Fibonacci)
-        k = (k >> 8) | (k << 24);   // 8-bit rotation (Fibonacci)
+        h = (h << 13) | (h >> 19);
+        k = (k << 17) | (k >> 15);
         
-        // Cross-pollination between h and k
-        h += k * prime3;
-        k ^= h * prime4;
+        h += k * 0x165667b1;
+        k ^= h * 0x27d4eb2f;
         
-        // Round 2: Position-dependent mixing
-        unsigned int pos_factor = (i + 1) * 0x9e3779b9;
-        h ^= (c << (i % 16)) * pos_factor;
-        k ^= (c >> (i % 16)) * pos_factor;
-        
-        // Additional avalanche per character
-        h ^= h >> 16;
-        k ^= k >> 16;
-        h *= 0x85ebca6b;
-        k *= 0xc2b2ae35;
-        
-        // Round 3: Length-position interaction
-        if (i % 3 == 0) {
-            h ^= (len * c) >> 11;
-            k ^= (len * c) << 7;
-        }
+        h ^= k;
+        k += h;
     }
     
-    // Ultra-enhanced final avalanche (6-stage mixing)
-    h ^= k;
-    h ^= h >> 16;
-    h *= prime1;
-    h ^= h >> 13;
-    h *= prime2;
-    h ^= h >> 16;
-    h *= prime3;
-    h ^= h >> 15;
-    h *= prime4;
-    h ^= h >> 14;
-    h *= 0x9e3779b9;
-    h ^= h >> 13;
+    h ^= len;
+    k ^= h;
     
-    return h % 100;  // Same table size as original
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    
+    return h;
 }
 
 // Calculate standard deviation for a dataset
@@ -191,11 +158,9 @@ int main() {
     
     // Load all datasets
     vector<string> dataset_names = {
-        "inputs/sample_input.txt",
-        "inputs/atoz.txt", 
-        "inputs/common500.txt",
-        "inputs/bertuncased.txt",
-        "inputs/mit_a.txt"
+        "inputs/test_alls.txt",
+        "inputs/test_passwords.txt",
+        "inputs/test_wordle500.txt"
     };
     
     vector<vector<string>> datasets;

@@ -5,4 +5,4 @@
 
 using namespace std;
 
-int hash_function(const string &text);
+unsigned int hash_function(const string &text);
