@@ -1,5 +1,0 @@
-Best h_seed: 3080181946
-Best k_seed: 3957784730
-Average Standard Deviation: 1.21903
-Tests completed: 996
-Time taken: 5 seconds

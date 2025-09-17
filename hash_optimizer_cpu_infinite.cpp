@@ -28,21 +28,69 @@ void signal_handler(int signal) {
     keep_running = false;
 }
 
-// Hash function (matches your current implementation)
+// Ultra-advanced hash function with prime-based mixing and multi-round processing
 int hash_function(const string& text, unsigned int h_seed, unsigned int k_seed) {
     unsigned int h = h_seed;
     unsigned int k = k_seed;
+    unsigned int len = text.length();
     
-    for (char c : text) {
-        h ^= static_cast<unsigned int>(c);
-        h *= k;
+    // Length-dependent seed adjustment for better distribution
+    h ^= len * 0x9e3779b9;  // Golden ratio
+    k ^= len * 0x6a09e667;  // Square root of 2
+    
+    // Prime constants for superior mixing
+    const unsigned int prime1 = 0x9e3779b1;  // Large prime near golden ratio
+    const unsigned int prime2 = 0x85ebca77;  // Large prime
+    const unsigned int prime3 = 0xc2b2ae3d;  // Large prime
+    const unsigned int prime4 = 0x27d4eb2f;  // Large prime
+    
+    // Multi-round processing with different strategies per round
+    for (size_t i = 0; i < len; i++) {
+        unsigned int c = (unsigned int)text[i];
+        
+        // Round 1: Prime-based character mixing
+        h ^= c * prime1;
+        k ^= c * prime2;
+        
+        // Advanced bit rotations (using Fibonacci numbers for optimal distribution)
+        h = (h << 13) | (h >> 19);  // 13-bit rotation (Fibonacci)
+        k = (k >> 8) | (k << 24);   // 8-bit rotation (Fibonacci)
+        
+        // Cross-pollination between h and k
+        h += k * prime3;
+        k ^= h * prime4;
+        
+        // Round 2: Position-dependent mixing
+        unsigned int pos_factor = (i + 1) * 0x9e3779b9;
+        h ^= (c << (i % 16)) * pos_factor;
+        k ^= (c >> (i % 16)) * pos_factor;
+        
+        // Additional avalanche per character
         h ^= h >> 16;
-        k ^= h;  // This line from your current hash.cpp
+        k ^= k >> 16;
+        h *= 0x85ebca6b;
+        k *= 0xc2b2ae35;
+        
+        // Round 3: Length-position interaction
+        if (i % 3 == 0) {
+            h ^= (len * c) >> 11;
+            k ^= (len * c) << 7;
+        }
     }
     
-    // Final hash processing
-    h *= 0x846ca68b;
+    // Ultra-enhanced final avalanche (6-stage mixing)
+    h ^= k;
     h ^= h >> 16;
+    h *= prime1;
+    h ^= h >> 13;
+    h *= prime2;
+    h ^= h >> 16;
+    h *= prime3;
+    h ^= h >> 15;
+    h *= prime4;
+    h ^= h >> 14;
+    h *= 0x9e3779b9;
+    h ^= h >> 13;
     
     return h % 100;
 }
@@ -178,13 +226,21 @@ int main() {
     cout << "=== INFINITE CPU HASH FUNCTION OPTIMIZER ===" << endl;
     cout << "Press Ctrl+C to stop and save the best result found" << endl;
     
-    // Load datasets
+    // Load datasets - include ALL input files
     vector<string> dataset_names = {
-        "inputs/sample_input.txt",
-        "inputs/atoz.txt", 
-        "inputs/common500.txt",
+        "inputs/1.txt",
+        "inputs/2.txt",
+        "inputs/3.txt",
+        "inputs/4.txt",
+        "inputs/5.txt",
+        "inputs/atoz.txt",
         "inputs/bertuncased.txt",
-        "inputs/mit_a.txt"
+        "inputs/common500.txt",
+        "inputs/mit_a.txt",
+        "inputs/sample_input.txt",
+        "inputs/test_alls.txt",
+        "inputs/test_passwords.txt",
+        "inputs/test_wordle500.txt"
     };
     
     vector<vector<string>> datasets;
