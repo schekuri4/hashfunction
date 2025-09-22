@@ -9,11 +9,12 @@
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <iomanip>
 
 using namespace std;
 
 // Hash function matching hash.cpp exactly
-int hash_function_test(const string &text, unsigned int h_seed, unsigned int k_seed) {
+unsigned int hash_function_test(const string &text, unsigned int h_seed, unsigned int k_seed) {
     unsigned int h = h_seed ^ 0x9e3779b9;
     unsigned int k = k_seed ^ 0x85ebca6b;
     unsigned int len = text.length();
@@ -47,41 +48,51 @@ int hash_function_test(const string &text, unsigned int h_seed, unsigned int k_s
 }
 
 // Calculate standard deviation for a dataset
-double calculate_std_dev(const vector<string>& dataset, unsigned int h_seed, unsigned int k_seed) {
-    vector<int> buckets(100, 0);
+double calculate_std_dev(const vector<string>& dataset, int table_size, unsigned int h_seed, unsigned int k_seed) {
+    vector<int> buckets(table_size, 0);
     
     // Hash all strings and count bucket usage
     for (const string& text : dataset) {
-        int bucket = hash_function_test(text, h_seed, k_seed);
+        unsigned int hash_val = hash_function_test(text, h_seed, k_seed);
+        int bucket = hash_val % table_size;
         buckets[bucket]++;
     }
     
     // Calculate mean
-    double mean = static_cast<double>(dataset.size()) / 100.0;
+    double mean = static_cast<double>(dataset.size()) / static_cast<double>(table_size);
     
     // Calculate standard deviation
     double variance = 0.0;
     for (int count : buckets) {
         variance += (count - mean) * (count - mean);
     }
-    variance /= 100.0;
+    variance /= static_cast<double>(table_size);
     
     return sqrt(variance);
 }
 
 // Load dataset from file
-vector<string> load_dataset(const string& filename) {
+pair<vector<string>, int> load_dataset(const string& filename) {
     vector<string> dataset;
+    int table_size = 0;
     ifstream file(filename);
-    string line;
     
+    if (!file.is_open()) {
+        return {dataset, table_size};
+    }
+    
+    // Read table size from first line
+    file >> table_size;
+    file.ignore(); // ignore newline after number
+    
+    string line;
     while (getline(file, line)) {
         if (!line.empty()) {
             dataset.push_back(line);
         }
     }
     
-    return dataset;
+    return {dataset, table_size};
 }
 
 // Structure to hold test results
@@ -90,6 +101,7 @@ struct TestResult {
     unsigned int k_seed;
     double avg_std_dev;
     vector<double> individual_std_devs;
+    vector<int> table_sizes;
 };
 
 // Global variables for thread coordination
@@ -100,7 +112,7 @@ atomic<bool> should_stop(false);
 
 // Worker thread function
 void worker_thread(int thread_id, int num_tests, const vector<vector<string>>& datasets, 
-                  const vector<string>& dataset_names) {
+                  const vector<string>& dataset_names, const vector<int>& table_sizes) {
     
     random_device rd;
     mt19937 gen(rd() + thread_id);  // Different seed per thread
@@ -119,7 +131,7 @@ void worker_thread(int thread_id, int num_tests, const vector<vector<string>>& d
         double total_std_dev = 0.0;
         
         for (size_t i = 0; i < datasets.size(); i++) {
-            double std_dev = calculate_std_dev(datasets[i], h_seed, k_seed);
+            double std_dev = calculate_std_dev(datasets[i], table_sizes[i], h_seed, k_seed);
             std_devs.push_back(std_dev);
             total_std_dev += std_dev;
         }
@@ -132,6 +144,7 @@ void worker_thread(int thread_id, int num_tests, const vector<vector<string>>& d
             best_local.k_seed = k_seed;
             best_local.avg_std_dev = avg_std_dev;
             best_local.individual_std_devs = std_devs;
+            best_local.table_sizes = table_sizes;
         }
         
         tests_completed++;
@@ -164,15 +177,18 @@ int main() {
     };
     
     vector<vector<string>> datasets;
+    vector<int> table_sizes;
     for (const string& name : dataset_names) {
         cout << "Loading " << name << "..." << endl;
-        vector<string> dataset = load_dataset(name);
+        auto [dataset, table_size] = load_dataset(name);
         if (dataset.empty()) {
             cout << "Warning: Could not load " << name << endl;
             continue;
         }
         datasets.push_back(dataset);
-        cout << "Loaded " << dataset.size() << " entries from " << name << endl;
+        table_sizes.push_back(table_size);
+        cout << "Loaded " << dataset.size() << " entries from " << name 
+             << " (table size: " << table_size << ")" << endl;
     }
     
     if (datasets.empty()) {
@@ -203,7 +219,7 @@ int main() {
     vector<thread> threads;
     for (int i = 0; i < num_threads; i++) {
         threads.emplace_back(worker_thread, i, tests_per_thread, 
-                           ref(datasets), ref(dataset_names));
+                           ref(datasets), ref(dataset_names), ref(table_sizes));
     }
     
     // Progress monitoring thread

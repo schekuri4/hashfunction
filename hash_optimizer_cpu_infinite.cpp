@@ -32,7 +32,7 @@ void signal_handler(int signal) {
 }
 
 // New optimized hash function
-int hash_function(const string& text, unsigned int h_seed, unsigned int k_seed) {
+unsigned int hash_function(const string& text, unsigned int h_seed, unsigned int k_seed) {
     unsigned int h = h_seed ^ 0x9e3779b9;
     unsigned int k = k_seed ^ 0x85ebca6b;
     unsigned int len = text.length();
@@ -66,51 +66,61 @@ int hash_function(const string& text, unsigned int h_seed, unsigned int k_seed) 
 }
 
 // Calculate standard deviation for a dataset with given seeds and bucket count
-double calculate_std_dev(const vector<string>& dataset, unsigned int h_seed, unsigned int k_seed, int k = 100) {
-    vector<int> buckets(k, 0);
+double calculate_std_dev(const vector<string>& dataset, unsigned int h_seed, unsigned int k_seed, int table_size) {
+    vector<int> buckets(table_size, 0);
     
     for (const string& str : dataset) {
-        int hash_val = hash_function(str, h_seed, k_seed);
-        int bucket = abs(hash_val) % k;
+        unsigned int hash_val = hash_function(str, h_seed, k_seed);
+        int bucket = hash_val % table_size;
         buckets[bucket]++;
     }
     
-    double mean = (double)dataset.size() / k;
-    double sum = 0.0;
+    double mean = static_cast<double>(dataset.size()) / static_cast<double>(table_size);
+    double variance = 0.0;
     
-    for (int i = 0; i < k; i++) {
-        double diff = buckets[i] - mean;
-        sum += diff * diff;
+    for (int count : buckets) {
+        variance += (count - mean) * (count - mean);
     }
+    variance /= static_cast<double>(table_size);
     
-    return sqrt(sum / k);
+    return sqrt(variance);
 }
 
 // Calculate average standard deviation across all datasets
 double calculate_average_std_dev(const vector<vector<string>>& datasets, 
-                                unsigned int h_seed, unsigned int k_seed, int k = 100) {
+                                const vector<int>& table_sizes,
+                                unsigned int h_seed, unsigned int k_seed) {
     double total_std_dev = 0.0;
     
-    for (const auto& dataset : datasets) {
-        total_std_dev += calculate_std_dev(dataset, h_seed, k_seed, k);
+    for (size_t i = 0; i < datasets.size(); i++) {
+        total_std_dev += calculate_std_dev(datasets[i], h_seed, k_seed, table_sizes[i]);
     }
     
     return total_std_dev / datasets.size();
 }
 
 // Load dataset from file
-vector<string> load_dataset(const string& filename) {
+pair<vector<string>, int> load_dataset(const string& filename) {
     vector<string> dataset;
+    int table_size = 0;
     ifstream file(filename);
-    string line;
     
+    if (!file.is_open()) {
+        return {dataset, table_size};
+    }
+    
+    // Read table size from first line
+    file >> table_size;
+    file.ignore(); // ignore newline after number
+    
+    string line;
     while (getline(file, line)) {
         if (!line.empty()) {
             dataset.push_back(line);
         }
     }
     
-    return dataset;
+    return {dataset, table_size};
 }
 
 // Save best result to file
@@ -171,7 +181,8 @@ void save_best_result(double best_score, unsigned int best_h, unsigned int best_
 
 // Worker thread function
 void worker_thread(int thread_id, const vector<vector<string>>& datasets, 
-                  int tests_per_batch, chrono::high_resolution_clock::time_point start_time, int k) {
+                  const vector<int>& table_sizes,
+                  int tests_per_batch, chrono::high_resolution_clock::time_point start_time) {
     random_device rd;
     mt19937 gen(rd() + thread_id);  // Different seed per thread
     uniform_int_distribution<unsigned int> dis;
@@ -186,7 +197,7 @@ void worker_thread(int thread_id, const vector<vector<string>>& datasets,
             unsigned int h_seed = dis(gen);
             unsigned int k_seed = dis(gen);
             
-            double score = calculate_average_std_dev(datasets, h_seed, k_seed, k);
+            double score = calculate_average_std_dev(datasets, table_sizes, h_seed, k_seed);
             total_tests_completed++;
             
             // Check if this is a new best
@@ -259,16 +270,18 @@ int main() {
     };
     
     vector<vector<string>> datasets;
+    vector<int> table_sizes;
     
     cout << "\nLoading datasets..." << endl;
     for (const string& name : dataset_names) {
-        vector<string> dataset = load_dataset(name);
+        auto [dataset, table_size] = load_dataset(name);
         if (dataset.empty()) {
             cout << "Warning: Could not load " << name << endl;
             continue;
         }
         datasets.push_back(dataset);
-        cout << "Loaded " << dataset.size() << " entries from " << name << endl;
+        table_sizes.push_back(table_size);
+        cout << "Loaded " << dataset.size() << " entries from " << name << " (table size: " << table_size << ")" << endl;
     }
     
     if (datasets.empty()) {
@@ -296,17 +309,6 @@ int main() {
     
     cout << "\nResults will be saved to: " << output_filename << endl;
     
-    // Calculate bucket count based on total number of strings
-    int total_strings = 0;
-    for (const auto& dataset : datasets) {
-        total_strings += dataset.size();
-    }
-    int k = total_strings;  // Use total number of strings as bucket count
-    
-    cout << "\nAutomatic bucket calculation:" << endl;
-    cout << "- Total strings across all datasets: " << total_strings << endl;
-    cout << "- Using " << k << " buckets for optimization" << endl;
-    
     // Configuration
     int num_threads = thread::hardware_concurrency();
     if (num_threads == 0) num_threads = 4;  // Fallback
@@ -326,7 +328,7 @@ int main() {
     // Start worker threads
     vector<thread> threads;
     for (int i = 0; i < num_threads; i++) {
-        threads.emplace_back(worker_thread, i, ref(datasets), tests_per_batch, start_time, k);
+        threads.emplace_back(worker_thread, i, ref(datasets), ref(table_sizes), tests_per_batch, start_time);
     }
     
     // Main monitoring loop

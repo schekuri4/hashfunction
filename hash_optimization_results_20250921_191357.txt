@@ -1,0 +1,48 @@
+=== HASH FUNCTION OPTIMIZATION RESULTS ===
+Started: 2025-09-21 19:13:57
+Hash Function Implementation:
+__device__ unsigned int hash_function_gpu(const char* text, int len, unsigned int h_seed, unsigned int k_seed) {
+    unsigned int h = h_seed ^ 0x9e3779b9;
+    unsigned int k = k_seed ^ 0x85ebca6b;
+    
+    for (int i = 0; i < len; i++) {
+        unsigned int c = (unsigned int)text[i];
+        
+        h ^= c * 0x9e3779b1;
+        k += c * 0xc2b2ae35;
+        
+        h = (h << 13) | (h >> 19);
+        k = (k << 17) | (k >> 15);
+        
+        h += k * 0x165667b1;
+        k ^= h * 0x27d4eb2f;
+        
+        h ^= k;
+        k += h;
+    }
+    
+    h ^= len;
+    k ^= h;
+    
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    
+    return h;
+}
+Datasets: 3 loaded
+=== OPTIMIZATION PROGRESS ===
+[2025-09-21 19:13:57] GPU NEW BEST: Score=1.875851 | Hash: h=2134887880(0x7f3fcdc8), k=2600037664(0x9af96d20) | Tests=250000 | Runtime=0s | Rate=250000/s
+[2025-09-21 19:13:57] GPU NEW BEST: Score=1.869607 | Hash: h=388719024(0x172b61b0), k=3572456955(0xd4ef5dfb) | Tests=500000 | Runtime=0s | Rate=500000/s
+[2025-09-21 19:13:57] GPU NEW BEST: Score=1.841465 | Hash: h=2317975714(0x8a2980a2), k=2693104684(0xa085842c) | Tests=1000000 | Runtime=0s | Rate=1000000/s
+[2025-09-21 19:13:57] GPU NEW BEST: Score=1.800319 | Hash: h=3041185813(0xb544d015), k=1400472539(0x537983db) | Tests=1750000 | Runtime=0s | Rate=1750000/s
+[2025-09-21 19:13:57] GPU NEW BEST: Score=1.795245 | Hash: h=3397137940(0xca7c3614), k=525991522(0x1f59fe62) | Tests=2250000 | Runtime=0s | Rate=2250000/s
+[2025-09-21 19:13:57] GPU NEW BEST: Score=1.734940 | Hash: h=982732638(0x3a934f5e), k=3721150753(0xddcc4121) | Tests=2750000 | Runtime=0s | Rate=2750000/s
+[2025-09-21 19:13:59] GPU NEW BEST: Score=1.673427 | Hash: h=3411275766(0xcb53eff6), k=3917203414(0xe97bc7d6) | Tests=11000000 | Runtime=2s | Rate=5500000/s
+[2025-09-21 19:14:20] GPU NEW BEST: Score=1.654481 | Hash: h=1958479041(0x74bc04c1), k=4019643805(0xef96e59d) | Tests=110500000 | Runtime=23s | Rate=4804347/s
+[2025-09-21 19:14:25] GPU NEW BEST: Score=1.616462 | Hash: h=215234005(0xcd435d5), k=2106458222(0x7d8e006e) | Tests=132500000 | Runtime=28s | Rate=4732142/s
+[2025-09-21 19:15:50] GPU NEW BEST: Score=1.614246 | Hash: h=3303216231(0xc4e31467), k=1971088565(0x757c6cb5) | Tests=533500000 | Runtime=113s | Rate=4721238/s
+[2025-09-21 19:16:15] GPU NEW BEST: Score=1.593569 | Hash: h=1351406294(0x508cd2d6), k=3768003278(0xe0972ace) | Tests=649500000 | Runtime=138s | Rate=4706521/s
+[2025-09-21 19:17:27] GPU NEW BEST: Score=1.593569 | Hash: h=1351406294(0x508cd2d6), k=3768003278(0xe0972ace) | Tests=984500000 | Runtime=210s | Rate=4688095/s

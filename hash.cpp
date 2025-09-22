@@ -5,8 +5,8 @@
 using namespace std;
 
 unsigned int hash_function(const string& text) {
-    unsigned int h = 0xa74e5167 ^ 0x9e3779b9;
-    unsigned int k = 0x616740fd ^ 0x85ebca6b;
+    unsigned int h = 0x80081bfa ^ 0x9e3779b9;
+    unsigned int k = 0xb06dba26 ^ 0x85ebca6b;
     unsigned int len = text.length();
     
     for (size_t i = 0; i < len; i++) {

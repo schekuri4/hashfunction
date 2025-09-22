@@ -20,7 +20,7 @@ using namespace std;
     } while(0)
 
 // GPU hash function matching hash.cpp exactly
-__device__ int hash_function_gpu(const char* text, int len, unsigned int h_seed, unsigned int k_seed) {
+__device__ unsigned int hash_function_gpu(const char* text, int len, unsigned int h_seed, unsigned int k_seed) {
     unsigned int h = h_seed ^ 0x9e3779b9;
     unsigned int k = k_seed ^ 0x85ebca6b;
     
@@ -55,7 +55,7 @@ __device__ int hash_function_gpu(const char* text, int len, unsigned int h_seed,
 // GPU kernel for calculating standard deviation
 __global__ void calculate_std_dev_kernel(
     char* dataset, int* string_lengths, int* string_offsets, int num_strings,
-    unsigned int* h_seeds, unsigned int* k_seeds, double* results, int num_tests) {
+    unsigned int* h_seeds, unsigned int* k_seeds, double* results, int num_tests, int table_size) {
     
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_tests) return;
@@ -63,25 +63,33 @@ __global__ void calculate_std_dev_kernel(
     unsigned int h_seed = h_seeds[idx];
     unsigned int k_seed = k_seeds[idx];
     
-    // Count bucket usage
-    int buckets[100] = {0};
+    // Allocate buckets dynamically based on table_size
+    extern __shared__ int buckets[];
+    
+    // Initialize buckets for this thread block
+    for (int i = threadIdx.x; i < table_size; i += blockDim.x) {
+        buckets[i] = 0;
+    }
+    __syncthreads();
     
     for (int i = 0; i < num_strings; i++) {
         char* str_start = dataset + string_offsets[i];
         int str_len = string_lengths[i];
-        int bucket = hash_function_gpu(str_start, str_len, h_seed, k_seed);
-        buckets[bucket]++;
+        unsigned int hash_val = hash_function_gpu(str_start, str_len, h_seed, k_seed);
+        int bucket = hash_val % table_size;
+        atomicAdd(&buckets[bucket], 1);
     }
+    __syncthreads();
     
     // Calculate standard deviation
-    double mean = static_cast<double>(num_strings) / 100.0;
+    double mean = static_cast<double>(num_strings) / static_cast<double>(table_size);
     double variance = 0.0;
     
-    for (int i = 0; i < 100; i++) {
-        double diff = buckets[i] - mean;
+    for (int i = 0; i < table_size; i++) {
+        double diff = static_cast<double>(buckets[i]) - mean;
         variance += diff * diff;
     }
-    variance /= 100.0;
+    variance /= static_cast<double>(table_size);
     
     results[idx] = sqrt(variance);
 }
@@ -156,18 +164,27 @@ void free_gpu_dataset(GPUDataset& dataset) {
     cudaFree(dataset.d_offsets);
 }
 
-vector<string> load_dataset(const string& filename) {
+pair<vector<string>, int> load_dataset(const string& filename) {
     vector<string> dataset;
+    int table_size = 0;
     ifstream file(filename);
-    string line;
     
+    if (!file.is_open()) {
+        return {dataset, table_size};
+    }
+    
+    // Read table size from first line
+    file >> table_size;
+    file.ignore(); // ignore newline after number
+    
+    string line;
     while (getline(file, line)) {
         if (!line.empty()) {
             dataset.push_back(line);
         }
     }
     
-    return dataset;
+    return {dataset, table_size};
 }
 
 int main() {
@@ -195,18 +212,20 @@ int main() {
     };
     
     vector<vector<string>> datasets;
+    vector<int> table_sizes;
     vector<GPUDataset> gpu_datasets;
     
     for (const string& name : dataset_names) {
         cout << "Loading " << name << "..." << endl;
-        vector<string> dataset = load_dataset(name);
+        auto [dataset, table_size] = load_dataset(name);
         if (dataset.empty()) {
             cout << "Warning: Could not load " << name << endl;
             continue;
         }
         datasets.push_back(dataset);
+        table_sizes.push_back(table_size);
         gpu_datasets.push_back(prepare_dataset_for_gpu(dataset));
-        cout << "Loaded " << dataset.size() << " entries" << endl;
+        cout << "Loaded " << dataset.size() << " entries (table size: " << table_size << ")" << endl;
     }
     
     if (datasets.empty()) {
@@ -253,12 +272,13 @@ int main() {
         cout << "Testing dataset " << (dataset_idx + 1) << "/" << gpu_datasets.size() << "..." << endl;
         
         // Run kernel for this dataset
-        calculate_std_dev_kernel<<<blocks, threads_per_block>>>(
+        int shared_mem_size = table_sizes[dataset_idx] * sizeof(int);
+        calculate_std_dev_kernel<<<blocks, threads_per_block, shared_mem_size>>>(
             gpu_datasets[dataset_idx].d_data,
             gpu_datasets[dataset_idx].d_lengths,
             gpu_datasets[dataset_idx].d_offsets,
             gpu_datasets[dataset_idx].num_strings,
-            d_h_seeds, d_k_seeds, d_results, total_tests);
+            d_h_seeds, d_k_seeds, d_results, total_tests, table_sizes[dataset_idx]);
         
         CUDA_CHECK(cudaDeviceSynchronize());
         
@@ -292,29 +312,53 @@ int main() {
         double total_std_dev = 0.0;
         
         for (size_t dataset_idx = 0; dataset_idx < datasets.size(); dataset_idx++) {
-            // Calculate std dev for this dataset (simplified CPU version)
-            vector<int> buckets(100, 0);
+            // Calculate std dev for this dataset (CPU version matching GPU)
+            int table_size = table_sizes[dataset_idx];
+            vector<int> buckets(table_size, 0);
+            
             for (const string& text : datasets[dataset_idx]) {
-                unsigned int h = h_seeds[i];
-                unsigned int k = k_seeds[i];
+                unsigned int h_seed = h_seeds[i];
+                unsigned int k_seed = k_seeds[i];
+                
+                // Use the same hash function as GPU
+                unsigned int h = h_seed ^ 0x9e3779b9;
+                unsigned int k = k_seed ^ 0x85ebca6b;
                 
                 for (char c : text) {
-                    h ^= static_cast<unsigned int>(c);
-                    h *= k;
-                    h ^= h >> 16;
+                    unsigned int ch = static_cast<unsigned int>(c);
+                    
+                    h ^= ch * 0x9e3779b1;
+                    k += ch * 0xc2b2ae35;
+                    
+                    h = (h << 13) | (h >> 19);
+                    k = (k << 17) | (k >> 15);
+                    
+                    h += k * 0x165667b1;
+                    k ^= h * 0x27d4eb2f;
+                    
+                    h ^= k;
+                    k += h;
                 }
-                h *= 0x846ca68b;
+                
+                h ^= text.length();
+                k ^= h;
+                
+                h ^= h >> 16;
+                h *= 0x85ebca6b;
+                h ^= h >> 13;
+                h *= 0xc2b2ae35;
                 h ^= h >> 16;
                 
-                buckets[h % 100]++;
+                buckets[h % table_size]++;
             }
             
-            double mean = static_cast<double>(datasets[dataset_idx].size()) / 100.0;
+            double mean = static_cast<double>(datasets[dataset_idx].size()) / static_cast<double>(table_size);
             double variance = 0.0;
             for (int count : buckets) {
-                variance += (count - mean) * (count - mean);
+                double diff = static_cast<double>(count) - mean;
+                variance += diff * diff;
             }
-            variance /= 100.0;
+            variance /= static_cast<double>(table_size);
             total_std_dev += sqrt(variance);
         }
         

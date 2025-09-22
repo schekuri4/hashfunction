@@ -74,8 +74,8 @@ __device__ unsigned int hash_function_gpu(const char* text, int len, unsigned in
 // GPU kernel for calculating standard deviation for multiple datasets
 __global__ void calculate_multi_dataset_std_dev_kernel(
     char** datasets, int** string_lengths, int** string_offsets, int* num_strings_per_dataset,
-    int num_datasets, unsigned int* h_seeds, unsigned int* k_seeds, 
-    double* results, int num_tests, int k) {
+    int* table_sizes, int num_datasets, unsigned int* h_seeds, unsigned int* k_seeds, 
+    double* results, int num_tests) {
     
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_tests) return;
@@ -91,9 +91,9 @@ __global__ void calculate_multi_dataset_std_dev_kernel(
         const int MAX_BUCKETS = 5000;  // Reduced to prevent stack overflow
         int buckets[MAX_BUCKETS];
         
-        // Only use up to k buckets (bounded by MAX_BUCKETS)
-        int actual_k = min(k, MAX_BUCKETS);
-        for (int i = 0; i < actual_k; i++) buckets[i] = 0;
+        // Use the actual table size for this dataset (bounded by MAX_BUCKETS)
+        int table_size = min(table_sizes[dataset_idx], MAX_BUCKETS);
+        for (int i = 0; i < table_size; i++) buckets[i] = 0;
         
         int num_strings = num_strings_per_dataset[dataset_idx];
         
@@ -103,19 +103,19 @@ __global__ void calculate_multi_dataset_std_dev_kernel(
             int str_len = string_lengths[dataset_idx][i];
             unsigned int hash_val = hash_function_gpu(str_start, str_len, h_seed, k_seed);
             // Use unsigned arithmetic to avoid negative modulo issues
-            unsigned int bucket = hash_val % actual_k;
+            unsigned int bucket = hash_val % table_size;
             buckets[bucket]++;
         }
         
         // Calculate standard deviation for this dataset
-        double mean = static_cast<double>(num_strings) / actual_k;
+        double mean = static_cast<double>(num_strings) / static_cast<double>(table_size);
         double variance = 0.0;
         
-        for (int i = 0; i < actual_k; i++) {
-            double diff = buckets[i] - mean;
+        for (int i = 0; i < table_size; i++) {
+            double diff = static_cast<double>(buckets[i]) - mean;
             variance += diff * diff;
         }
-        variance /= actual_k;
+        variance /= static_cast<double>(table_size);
         total_std_dev += sqrt(variance);
     }
     
@@ -123,17 +123,29 @@ __global__ void calculate_multi_dataset_std_dev_kernel(
     results[idx] = total_std_dev / num_datasets;
 }
 
-// GPU kernel for random seed generation
+// Improved GPU kernel for high-quality random seed generation
 __global__ void generate_seeds_kernel(unsigned int* h_seeds, unsigned int* k_seeds, 
                                      int num_tests, unsigned long long seed_offset) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_tests) return;
     
     curandState state;
-    curand_init(seed_offset + idx, 0, 0, &state);
+    // Use more diverse seeding: combine global offset, block ID, thread ID, and time-based component
+    unsigned long long diverse_seed = seed_offset + 
+                                     (blockIdx.x * 1000000ULL) + 
+                                     (threadIdx.x * 1000ULL) + 
+                                     ((seed_offset >> 16) * idx);
+    curand_init(diverse_seed, idx, 0, &state);
     
-    h_seeds[idx] = curand(&state);
-    k_seeds[idx] = curand(&state);
+    // Generate multiple random numbers and use XOR mixing for better quality
+    unsigned int r1 = curand(&state);
+    unsigned int r2 = curand(&state);
+    unsigned int r3 = curand(&state);
+    unsigned int r4 = curand(&state);
+    
+    // Mix the random numbers for better distribution
+    h_seeds[idx] = r1 ^ (r2 << 16) ^ (r3 >> 8);
+    k_seeds[idx] = r2 ^ (r4 << 12) ^ (r1 >> 4);
 }
 
 // Structure for GPU dataset
@@ -193,18 +205,27 @@ void free_gpu_dataset(GPUDataset& dataset) {
     cudaFree(dataset.d_offsets);
 }
 
-vector<string> load_dataset(const string& filename) {
+pair<vector<string>, int> load_dataset(const string& filename) {
     vector<string> dataset;
+    int table_size = 0;
     ifstream file(filename);
-    string line;
     
+    if (!file.is_open()) {
+        return {dataset, table_size};
+    }
+    
+    // Read table size from first line
+    file >> table_size;
+    file.ignore(); // ignore newline after number
+    
+    string line;
     while (getline(file, line)) {
         if (!line.empty()) {
             dataset.push_back(line);
         }
     }
     
-    return dataset;
+    return {dataset, table_size};
 }
 
 string extract_hash_function() {
@@ -302,18 +323,22 @@ int main() {
     };
     
     vector<vector<string>> datasets;
+    vector<int> table_sizes;
     vector<GPUDataset> gpu_datasets;
     
     cout << "\nLoading datasets..." << endl;
     for (const string& name : dataset_names) {
-        vector<string> dataset = load_dataset(name);
+        pair<vector<string>, int> result = load_dataset(name);
+        vector<string> dataset = result.first;
+        int table_size = result.second;
         if (dataset.empty()) {
             cout << "Warning: Could not load " << name << endl;
             continue;
         }
         datasets.push_back(dataset);
+        table_sizes.push_back(table_size);
         gpu_datasets.push_back(prepare_dataset_for_gpu(dataset));
-        cout << "Loaded " << dataset.size() << " entries from " << name << endl;
+        cout << "Loaded " << dataset.size() << " entries from " << name << " (table size: " << table_size << ")" << endl;
     }
     
     // Initialize output file with start timestamp
@@ -341,32 +366,26 @@ int main() {
         return 1;
     }
     
-    // Calculate bucket count based on total number of strings
+    cout << "\nUsing individual table sizes for each dataset:" << endl;
     int total_strings = 0;
-    for (const auto& dataset : datasets) {
-        total_strings += dataset.size();
+    for (size_t i = 0; i < datasets.size(); i++) {
+        total_strings += datasets[i].size();
+        cout << "- Dataset " << (i+1) << ": " << datasets[i].size() << " strings, table size: " << table_sizes[i] << endl;
     }
-    int k = total_strings;  // Use total number of strings as bucket count
-    
-    // Ensure bucket count is within GPU memory limits
-    if (k > 1000) {
-        k = 1000;  // Cap at 1000 for GPU memory safety
-        cout << "\nNote: Bucket count capped at 1000 for GPU memory safety" << endl;
-    }
-    
-    cout << "\nAutomatic bucket calculation:" << endl;
     cout << "- Total strings across all datasets: " << total_strings << endl;
-    cout << "- Using " << k << " buckets for optimization" << endl;
     
-    // Configuration for maximum GPU utilization
-    int tests_per_batch = 1000000;  // 1M tests per batch
+    // Adaptive configuration for better exploration
+    int base_tests_per_batch = 250000;  // Start with smaller batches for faster feedback
+    int current_tests_per_batch = base_tests_per_batch;
+    int max_tests_per_batch = 1000000;
     int threads_per_block = 256;
-    int blocks = (tests_per_batch + threads_per_block - 1) / threads_per_block;
+    int blocks = (current_tests_per_batch + threads_per_block - 1) / threads_per_block;
     
     cout << "\nGPU Configuration:" << endl;
-    cout << "- Tests per batch: " << tests_per_batch << endl;
+    cout << "- Initial tests per batch: " << current_tests_per_batch << " (adaptive)" << endl;
+    cout << "- Max tests per batch: " << max_tests_per_batch << endl;
     cout << "- Threads per block: " << threads_per_block << endl;
-    cout << "- Number of blocks: " << blocks << endl;
+    cout << "- Initial number of blocks: " << blocks << endl;
     cout << "- Datasets: " << datasets.size() << endl;
     
     // Prepare GPU memory for multi-dataset processing
@@ -387,11 +406,13 @@ int main() {
     int** d_lengths_ptrs;
     int** d_offsets_ptrs;
     int* d_num_strings;
+    int* d_table_sizes;
     
     CUDA_CHECK(cudaMalloc(&d_dataset_ptrs, gpu_datasets.size() * sizeof(char*)));
     CUDA_CHECK(cudaMalloc(&d_lengths_ptrs, gpu_datasets.size() * sizeof(int*)));
     CUDA_CHECK(cudaMalloc(&d_offsets_ptrs, gpu_datasets.size() * sizeof(int*)));
     CUDA_CHECK(cudaMalloc(&d_num_strings, gpu_datasets.size() * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_table_sizes, gpu_datasets.size() * sizeof(int)));
     
     CUDA_CHECK(cudaMemcpy(d_dataset_ptrs, h_dataset_ptrs.data(), 
                          gpu_datasets.size() * sizeof(char*), cudaMemcpyHostToDevice));
@@ -401,62 +422,82 @@ int main() {
                          gpu_datasets.size() * sizeof(int*), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_num_strings, h_num_strings.data(), 
                          gpu_datasets.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_table_sizes, table_sizes.data(), 
+                         gpu_datasets.size() * sizeof(int), cudaMemcpyHostToDevice));
     
-    // Allocate GPU memory for seeds and results
+    // Allocate GPU memory for seeds and results (use max size for buffers)
     unsigned int *d_h_seeds, *d_k_seeds;
     double *d_results;
     
-    CUDA_CHECK(cudaMalloc(&d_h_seeds, tests_per_batch * sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc(&d_k_seeds, tests_per_batch * sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc(&d_results, tests_per_batch * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_h_seeds, max_tests_per_batch * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&d_k_seeds, max_tests_per_batch * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&d_results, max_tests_per_batch * sizeof(double)));
     
-    // Host memory for results
-    vector<double> h_results(tests_per_batch);
-    vector<unsigned int> h_h_seeds(tests_per_batch);
-    vector<unsigned int> h_k_seeds(tests_per_batch);
+    // Host memory for results (use max size for buffers)
+    vector<double> h_results(max_tests_per_batch);
+    vector<unsigned int> h_h_seeds(max_tests_per_batch);
+    vector<unsigned int> h_k_seeds(max_tests_per_batch);
     
     auto start_time = chrono::high_resolution_clock::now();
     long long total_tests = 0;
     int batch_count = 0;
     unsigned long long seed_offset = 0;
+    int batches_since_improvement = 0;
+    double last_best_score = global_best_score;
     
-    cout << "\n🚀 Starting infinite optimization..." << endl;
+    cout << "\n🚀 Starting adaptive infinite optimization..." << endl;
     cout << "Current best: " << fixed << setprecision(6) << global_best_score << endl;
     
     while (keep_running) {
         batch_count++;
         
-        // Generate random seeds
+        // Adaptive batch sizing: increase batch size if no improvement for a while
+        if (batches_since_improvement > 20 && current_tests_per_batch < max_tests_per_batch) {
+            current_tests_per_batch = min(max_tests_per_batch, current_tests_per_batch * 2);
+            blocks = (current_tests_per_batch + threads_per_block - 1) / threads_per_block;
+            batches_since_improvement = 0;
+            cout << "📈 Increasing batch size to " << current_tests_per_batch << " tests" << endl;
+        }
+        
+        // Generate random seeds with time-based diversity
         generate_seeds_kernel<<<blocks, threads_per_block>>>(
-            d_h_seeds, d_k_seeds, tests_per_batch, seed_offset);
+            d_h_seeds, d_k_seeds, current_tests_per_batch, seed_offset);
         CUDA_CHECK(cudaDeviceSynchronize());
         
         // Run optimization kernel
         calculate_multi_dataset_std_dev_kernel<<<blocks, threads_per_block>>>(
             d_dataset_ptrs, d_lengths_ptrs, d_offsets_ptrs, d_num_strings,
-            gpu_datasets.size(), d_h_seeds, d_k_seeds, d_results, tests_per_batch, k);
+            d_table_sizes, gpu_datasets.size(), d_h_seeds, d_k_seeds, d_results, current_tests_per_batch);
         CUDA_CHECK(cudaDeviceSynchronize());
         
-        // Copy results back to host
+        // Copy only results first to find the best score
         CUDA_CHECK(cudaMemcpy(h_results.data(), d_results, 
-                             tests_per_batch * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_h_seeds.data(), d_h_seeds, 
-                             tests_per_batch * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_k_seeds.data(), d_k_seeds, 
-                             tests_per_batch * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                             current_tests_per_batch * sizeof(double), cudaMemcpyDeviceToHost));
         
         // Find best result in this batch
-        auto min_it = min_element(h_results.begin(), h_results.end());
+        auto min_it = min_element(h_results.begin(), h_results.begin() + current_tests_per_batch);
         int best_idx = distance(h_results.begin(), min_it);
         double batch_best = *min_it;
         
-        total_tests += tests_per_batch;
+        // Only copy seed data if we found an improvement (saves bandwidth)
+        bool need_seeds = (batch_best < global_best_score);
+        if (need_seeds) {
+            CUDA_CHECK(cudaMemcpy(h_h_seeds.data(), d_h_seeds, 
+                                 current_tests_per_batch * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(h_k_seeds.data(), d_k_seeds, 
+                                 current_tests_per_batch * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+        }
+        
+        total_tests += current_tests_per_batch;
         
         // Update global best if we found something better
+        bool found_improvement = false;
         if (batch_best < global_best_score) {
             global_best_score = batch_best;
             global_best_h = h_h_seeds[best_idx];
             global_best_k = h_k_seeds[best_idx];
+            found_improvement = true;
+            batches_since_improvement = 0;
             
             auto current_time = chrono::high_resolution_clock::now();
             auto duration = chrono::duration_cast<chrono::seconds>(current_time - start_time);
@@ -476,6 +517,8 @@ int main() {
             // Save immediately when we find a better result
             save_best_result(global_best_score, global_best_h, global_best_k, 
                            total_tests, duration.count());
+        } else {
+            batches_since_improvement++;
         }
         
         // Progress update every 10 batches
@@ -489,7 +532,8 @@ int main() {
                  << (total_tests / max(1, (int)duration.count())) << " tests/sec" << endl;
         }
         
-        seed_offset += tests_per_batch;
+        // Update seed offset for next batch (use current batch size)
+        seed_offset += current_tests_per_batch;
     }
     
     // Final save and cleanup
@@ -518,6 +562,7 @@ int main() {
     cudaFree(d_lengths_ptrs);
     cudaFree(d_offsets_ptrs);
     cudaFree(d_num_strings);
+    cudaFree(d_table_sizes);
     cudaFree(d_h_seeds);
     cudaFree(d_k_seeds);
     cudaFree(d_results);
